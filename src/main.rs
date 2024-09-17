@@ -131,20 +131,18 @@ impl<'buf> IpcBuffer<'buf> {
         xous_buf
     }
 
-    /*
-    pub fn to_original<T, S, E>(&self) -> core::result::Result<T, E>
+    pub fn to_original<T, U, E>(&self) -> core::result::Result<T, E>
     where
         // T: Archive + rkyv::Deserialize<T, rkyv::rancor::Strategy<rkyv::de::Unpool, E>>,
         // E: std::fmt::Debug, <T as Archive>::Archived: Deserialize<T, Strategy<rkyv::de::Pool, E>>
         // T: Archive + rkyv::Deserialize<T, rkyv::rancor::Strategy<rkyv::de::Pool, E>> + Portable,
-        T: Portable + rkyv::Archive,
-        S: rkyv::Deserialize<T, rkyv::rancor::Strategy<rkyv::de::Unpool, E>>,
+        T: rkyv::Archive<Archived = U>,
+        U: Portable,
         E: std::fmt::Debug, <T as Archive>::Archived: Deserialize<T, Strategy<rkyv::de::Pool, E>>
     {
-        let archived = unsafe{rkyv::access_unchecked::<T>(&self.slice[..self.pos])};
-        Ok(rkyv::deserialize::<S, E>(archived).unwrap())
+        let r = unsafe{rkyv::access_unchecked::<U>(&self.slice[..self.pos])};
+        Ok(rkyv::deserialize::<T, E>(r).unwrap())
     }
-    */
 
     pub fn as_flat<T, U>(&self) -> core::result::Result<&U, ()>
     where
@@ -171,8 +169,11 @@ fn main() {
     let buf = IpcBuffer::into_buf::<Identity, Test>(&value); // AsBox
 
     // let o = buf.to_original::<ArchivedTest, _>().unwrap();
-    let f = buf.as_flat::<Test, ArchivedTest>().unwrap();
+    let f = buf.as_flat::<Test, _>().unwrap();
     println!("f: {:?}", f);
+
+    let t1 = buf.to_original::<Test, _, Error>().unwrap();
+    println!("t copy 1: {:?}", t1);
 
     println!("buf.slice: {:x?}", &buf.slice[..buf.pos+1]);
     let archived = unsafe{rkyv::access_unchecked::<ArchivedTest>(&buf.slice[..buf.pos])};
