@@ -4,7 +4,7 @@ use rkyv::{
     access_unchecked, api::{high::to_bytes_in, low::{to_bytes_in_with_alloc, LowSerializer}}, deserialize, rancor::{Error, Failure, Panic, Strategy}, ser::{allocator::SubAllocator,
         writer::Buffer,
         Positional,
-    }, util::Align, with::{ArchiveWith, AsBox, Identity, InlineAsBox, SerializeWith}, Archive, Archived, Deserialize, Place, Serialize
+    }, util::Align, with::{ArchiveWith, AsBox, Identity, InlineAsBox, SerializeWith}, Archive, Archived, Deserialize, Place, Portable, Serialize
 };
 
 use std::marker::PhantomData;
@@ -131,16 +131,28 @@ impl<'buf> IpcBuffer<'buf> {
         xous_buf
     }
 
-    pub fn to_original<T, E>(&self) -> core::result::Result<T, E>
+    /*
+    pub fn to_original<T, S, E>(&self) -> core::result::Result<T, E>
     where
         // T: Archive + rkyv::Deserialize<T, rkyv::rancor::Strategy<rkyv::de::Unpool, E>>,
         // E: std::fmt::Debug, <T as Archive>::Archived: Deserialize<T, Strategy<rkyv::de::Pool, E>>
-        T: Archive + rkyv::Deserialize<T, rkyv::rancor::Strategy<rkyv::de::Pool, E>>,
+        // T: Archive + rkyv::Deserialize<T, rkyv::rancor::Strategy<rkyv::de::Pool, E>> + Portable,
+        T: Portable + rkyv::Archive,
+        S: rkyv::Deserialize<T, rkyv::rancor::Strategy<rkyv::de::Unpool, E>>,
         E: std::fmt::Debug, <T as Archive>::Archived: Deserialize<T, Strategy<rkyv::de::Pool, E>>
     {
-        let archived = unsafe{rkyv::from_bytes_unchecked::<T, E>(&self.slice[..]).unwrap()};
-        // let archived = unsafe{rkyv::access_unchecked::<T>(&self.slice[..])};
-        Ok(rkyv::deserialize::<T,E>(&archived).unwrap())
+        let archived = unsafe{rkyv::access_unchecked::<T>(&self.slice[..self.pos])};
+        Ok(rkyv::deserialize::<S, E>(archived).unwrap())
+    }
+    */
+
+    pub fn as_flat<T, U>(&self) -> core::result::Result<&U, ()>
+    where
+        T: rkyv::Archive<Archived = U>,
+        U: Portable
+    {
+        let r = unsafe{rkyv::access_unchecked::<U>(&self.slice[..self.pos])};
+        Ok(r)
     }
 }
 
@@ -157,6 +169,10 @@ fn main() {
     };
 
     let buf = IpcBuffer::into_buf::<Identity, Test>(&value); // AsBox
+
+    // let o = buf.to_original::<ArchivedTest, _>().unwrap();
+    let f = buf.as_flat::<Test, ArchivedTest>().unwrap();
+    println!("f: {:?}", f);
 
     println!("buf.slice: {:x?}", &buf.slice[..buf.pos+1]);
     let archived = unsafe{rkyv::access_unchecked::<ArchivedTest>(&buf.slice[..buf.pos])};
