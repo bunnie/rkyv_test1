@@ -1,24 +1,15 @@
 use core::mem::MaybeUninit;
 
 use rkyv::{
-    access_unchecked, api::{high::to_bytes_in, low::{to_bytes_in_with_alloc, LowSerializer}}, rancor::{Error, Failure, Panic, Strategy}, ser::{allocator::SubAllocator,
-        writer::Buffer, Writer
-    }, util::Align, with::{ArchiveWith, AsBox, InlineAsBox, SerializeWith}, Archive, Archived, Place, Resolver, Serialize, Portable
+    access_unchecked, api::{high::to_bytes_in, low::{to_bytes_in_with_alloc, LowSerializer}}, deserialize, rancor::{Error, Failure, Panic, Strategy}, ser::{allocator::SubAllocator,
+        writer::Buffer,
+        Positional,
+    }, util::Align, with::{ArchiveWith, AsBox, Identity, InlineAsBox, SerializeWith}, Archive, Archived, Deserialize, Place, Serialize
 };
 
 use std::marker::PhantomData;
 
 use xous::{MemoryAddress, MemoryMessage, MemoryRange, Error as XousError};
-
-#[derive(Archive, Serialize)]
-enum Event {
-    Spawn,
-    Speak(String),
-    Die,
-}
-
-
-use rkyv::{deserialize, Deserialize};
 
 #[derive(Archive, Deserialize, Serialize, Debug, PartialEq)]
 #[rkyv(
@@ -35,14 +26,6 @@ struct Test {
     string2: String,
 }
 
-
-// this is for alloc test
-#[derive(Archive, Serialize)]
-struct Example<'a> {
-    #[rkyv(with = InlineAsBox)]
-    inner: &'a i32,
-}
-
 const PAGE_SIZE: usize = 4096;
 const PAGE_POOL_SIZE: usize = 8;
 #[repr(C, align(4096))]
@@ -54,6 +37,7 @@ pub struct Pool {
 pub struct IpcBuffer<'buf> {
     pages: MemoryRange,
     alloc_at: usize,
+    pos: usize,
     slice: &'buf mut [u8],
     should_drop: bool,
     memory_message: Option<&'buf mut MemoryMessage>,
@@ -80,7 +64,8 @@ type Serializer<'a, 'b> =
 impl<'buf> IpcBuffer<'buf> {
     pub fn new(len: usize) -> Self {
         let len_to_page = (len + (PAGE_SIZE -1)) & !(PAGE_SIZE - 1);
-        let alloc_start = len + RKYV_OVERHEAD;
+        // let alloc_start = len + RKYV_OVERHEAD;
+        let alloc_start = len_to_page - RKYV_OVERHEAD;
 
         // Allocate enough memory to hold the requested data
         let new_mem = map_memory(len_to_page);
@@ -88,6 +73,7 @@ impl<'buf> IpcBuffer<'buf> {
         IpcBuffer {
             pages: new_mem,
             slice: unsafe { core::slice::from_raw_parts_mut(new_mem.as_mut_ptr(), len_to_page) },
+            pos: 0,
             alloc_at: alloc_start,
             should_drop: true,
             memory_message: None,
@@ -127,7 +113,8 @@ impl<'buf> IpcBuffer<'buf> {
                 F::serialize_with(self.0, serializer)
             }
         }
-        let xous_buf = Self::new(core::mem::size_of::<T>());
+        let mut xous_buf = Self::new(core::mem::size_of::<T>());
+        println!("alloc at: {}", xous_buf.alloc_at);
         let (buf, scratch) = xous_buf.slice.split_at_mut(xous_buf.alloc_at);
 
         let wrap = Wrap(src, PhantomData::<F>);
@@ -137,7 +124,10 @@ impl<'buf> IpcBuffer<'buf> {
         };
         let alloc = SubAllocator::new(maybe_uninit_slice);
 
-        let _ = rkyv::api::low::to_bytes_in_with_alloc::<_, _, Panic>(&wrap, writer, alloc);
+        let serbuf = rkyv::api::low::to_bytes_in_with_alloc::<_, _, Panic>(&wrap, writer, alloc).unwrap();
+        xous_buf.pos = serbuf.pos();
+        println!("pos: {}", xous_buf.pos);
+        println!("scratch: {:x?}", &scratch[..32]);
         xous_buf
     }
 
@@ -156,48 +146,35 @@ impl<'buf> IpcBuffer<'buf> {
 
 
 fn main() {
-    let event = Event::Speak("Help me!".to_string());
-    let mut bytes = Align([MaybeUninit::uninit(); 256]);
-    let buffer = to_bytes_in::<_, Error>(&event, Buffer::from(&mut *bytes))
-        .expect("failed to serialize event");
-    let archived = unsafe { access_unchecked::<Archived<Event>>(&buffer) };
-    if let Archived::<Event>::Speak(message) = archived {
-        assert_eq!(message.as_str(), "Help me!");
-    } else {
-        panic!("archived event was of the wrong type");
-    }
-
-    let mut output = Align([MaybeUninit::<u8>::uninit(); core::mem::size_of::<Test>() + 20]);
-    let mut alloc = [MaybeUninit::<u8>::uninit(); 256];
-
+    println!("Size of Test: {}", core::mem::size_of::<Test>());
 
     // with an alloc
     let value = Test {
         int: 42,
-        string: "hello world with more stuff in it".to_string(),
+        string: "hello world with more stuff in it foo bar baz and all that jazz and more jazz jazz jazz".to_string(),
         option: Some(vec![1, 2, 3, 4]),
         string2: "more stuff".to_string(),
     };
 
-    println!("Size of Test: {}", core::mem::size_of::<Test>());
+    let buf = IpcBuffer::into_buf::<Identity, Test>(&value); // AsBox
 
-    let bytes = to_bytes_in_with_alloc::<_, _, Failure>(
-        &value,
-        Buffer::from(&mut *output),
-        SubAllocator::new(&mut alloc),
-    )
-    .unwrap();
+    println!("buf.slice: {:x?}", &buf.slice[..buf.pos+1]);
+    let archived = unsafe{rkyv::access_unchecked::<ArchivedTest>(&buf.slice[..buf.pos])};
+    println!("archived: {:?}", archived);
+    let t = rkyv::deserialize::<Test, Error>(archived).unwrap();
+    println!("t: {:?}", t);
+    assert_eq!(t.string, value.string);
 
-    // Or you can use the unsafe API for maximum performance
+    use rkyv::ser::allocator::Arena;
+    use rkyv::api::high::to_bytes_with_alloc;
+    let mut arena = Arena::new();
+
+    // let de = buf.to_original::<Test, rkyv::rancor::Error>().unwrap();
+    let bytes =
+        to_bytes_with_alloc::<_, Error>(&value, arena.acquire()).unwrap();
     let archived =
         unsafe { rkyv::access_unchecked::<ArchivedTest>(&bytes[..]) };
     assert_eq!(archived, &value);
-
-    // And you can always deserialize back to the original type
     let deserialized = deserialize::<Test, Error>(archived).unwrap();
-    assert_eq!(deserialized, value);
-
-    let buf = IpcBuffer::into_buf::<AsBox, Test>(&value);
-
-    let de = buf.to_original::<Test, rkyv::rancor::Error>().unwrap();
+    assert_eq!(deserialized.string2, value.string2);
 }
