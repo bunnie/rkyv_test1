@@ -1,15 +1,15 @@
 use core::mem::MaybeUninit;
 
 use rkyv::{
-    access_unchecked, api::{high::to_bytes_in, low::{to_bytes_in_with_alloc, LowSerializer}}, deserialize, rancor::{Error, Failure, Panic, Strategy}, ser::{allocator::SubAllocator,
+    api::low::LowSerializer, deserialize, rancor::{Error, Panic, Strategy}, ser::{allocator::SubAllocator,
         writer::Buffer,
         Positional,
-    }, util::Align, with::{ArchiveWith, AsBox, Identity, InlineAsBox, SerializeWith}, Archive, Archived, Deserialize, Place, Portable, Serialize
+    }, with::{ArchiveWith, Identity, SerializeWith}, Archive, Deserialize, Place, Portable, Serialize
 };
 
 use std::marker::PhantomData;
 
-use xous::{MemoryAddress, MemoryMessage, MemoryRange, Error as XousError};
+use xous::{MemoryMessage, MemoryRange};
 
 #[derive(Archive, Deserialize, Serialize, Debug, PartialEq)]
 #[rkyv(
