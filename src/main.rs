@@ -2,7 +2,7 @@ use core::mem::MaybeUninit;
 
 use rkyv::{
     api::low::LowSerializer, deserialize, rancor::{Error, Panic, Strategy}, ser::{allocator::SubAllocator,
-        writer::Buffer,
+        writer::Buffer as RkyvBuffer,
         Positional,
     }, with::{ArchiveWith, Identity, SerializeWith}, Archive, Deserialize, Place, Portable, Serialize
 };
@@ -34,7 +34,7 @@ pub struct Pool {
 }
 
 #[derive(Debug)]
-pub struct IpcBuffer<'buf> {
+pub struct Buffer<'buf> {
     pages: MemoryRange,
     alloc_at: usize,
     pos: usize,
@@ -59,9 +59,9 @@ pub fn map_memory(len: usize) -> MemoryRange {
 }
 
 type Serializer<'a, 'b> =
-    LowSerializer<'a, Buffer<'b>, SubAllocator<'a>, Panic>;
+    LowSerializer<'a, RkyvBuffer<'b>, SubAllocator<'a>, Panic>;
 
-impl<'buf> IpcBuffer<'buf> {
+impl<'buf> Buffer<'buf> {
     pub fn new(len: usize) -> Self {
         let len_to_page = (len + (PAGE_SIZE -1)) & !(PAGE_SIZE - 1);
         // let alloc_start = len + RKYV_OVERHEAD;
@@ -70,7 +70,7 @@ impl<'buf> IpcBuffer<'buf> {
         // Allocate enough memory to hold the requested data
         let new_mem = map_memory(len_to_page);
 
-        IpcBuffer {
+        Buffer {
             pages: new_mem,
             slice: unsafe { core::slice::from_raw_parts_mut(new_mem.as_mut_ptr(), len_to_page) },
             pos: 0,
@@ -118,7 +118,7 @@ impl<'buf> IpcBuffer<'buf> {
         let (buf, scratch) = xous_buf.slice.split_at_mut(xous_buf.alloc_at);
 
         let wrap = Wrap(src, PhantomData::<F>);
-        let writer = Buffer::from(buf);
+        let writer = RkyvBuffer::from(buf);
         let maybe_uninit_slice: &mut [MaybeUninit<u8>] = unsafe {
             std::slice::from_raw_parts_mut(scratch.as_ptr() as *mut MaybeUninit<u8>, scratch.len())
         };
@@ -166,7 +166,7 @@ fn main() {
         string2: "more stuff".to_string(),
     };
 
-    let buf = IpcBuffer::into_buf::<Identity, Test>(&value); // AsBox
+    let buf = Buffer::into_buf::<Identity, Test>(&value); // AsBox
 
     // let o = buf.to_original::<ArchivedTest, _>().unwrap();
     let f = buf.as_flat::<Test, _>().unwrap();
